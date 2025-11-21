@@ -12,7 +12,7 @@ The setup involves three main components:
 
 ### Architecture
 
-```mermaid
+```
                    ┌────────────┐       ┌─ ─ ─ ─ ─ ─ ─ ─ ┐
                    │  BROKER    │   ┌ - ► PROXY SERVER N │
                    │  SERVER    │       │ IP ..........  │
@@ -61,7 +61,7 @@ The broker server requires a public IP and several open ports:
 # ./frps.toml
 [common]
 bind_port = 7000
-token = "a_secure_password_123"
+token = "{{ .Envs.FRP_TOKEN }}"
 
 # Dashboard configuration
 dashboard_port = 17000
@@ -78,7 +78,26 @@ log_max_days = 7
 ```sh
 docker run -d --name frps --network host \
   -v $(pwd)/frps.toml:/frps.toml \
+  -e FRP_TOKEN=a_secure_password_123 \
   ghcr.io/fatedier/frps:v0.65.0 /usr/bin/frps -c /frps.toml
+```
+
+**Run with Docker:**
+```yaml
+services:
+  frps:
+    image: ghcr.io/fatedier/frps:v0.65.0
+    volumes:
+      - ./frps/frps.toml:/frps.toml
+    container_name: frps
+    ports:
+      - "7000:7000"
+      - "17000:17000"
+    network_mode: "host"
+    restart: unless-stopped
+	environment:
+      - FRP_TOKEN=a_secure_password_123
+    entrypoint: ["/usr/bin/frps", "-c", "/frps.toml"]
 ```
 
 Once running, you can access the dashboard at `http://<broker-server-ip>:17000`.
@@ -91,15 +110,15 @@ Run this on any machine you want to use as a proxy.
 ```yaml
 services:
   squid-proxy:
-    image: thanhpk/squid:2.0.0
+    image: ghcr.io/thanhpk/squid:main
     container_name: squid-proxy
     restart: unless-stopped
     environment:
       - SQUID_USER=user1
       - SQUID_PASS=s3cret
       - FRP_SERVER_ADDR=frp.subiz.net # Replace with your broker IP
-      - FRP_TOKEN=a_secure_password_123 # Must match frps.toml
-      - FRP_REMOTE_PORT=17001
+      - FRP_TOKEN=a_secure_password_123 # Must match broker server
+      - FRP_REMOTE_PORT=17001 # must be unique for each proxy server
       - TZ=UTC
 ```
 **Run with Docker:**
@@ -112,7 +131,7 @@ docker run -d --name squid-proxy \
   -e FRP_REMOTE_PORT=17001 \
   -e TZ=UTC \
   --restart unless-stopped \
-  thanhpk/squid:2.0.0
+  ghcr.io/thanhpk/squid:main
 ```
 
 #### Environment Variables
@@ -162,7 +181,7 @@ This should return the IP of one of your proxy servers, not your local IP.
     ```
 4.  In another terminal, test the connection:
     ```sh
-    curl -x http://user1:s3cret@frp.subiz.net:17001 https://api5.subiz.com.vn/4.1/ip
+    curl -x http://user1:s3cret@frp.subiz.net:17002 https://api5.subiz.com.vn/4.1/ip
     ```
 This command routes traffic from your machine to the `frp.subiz.net` broker, which forwards it back to the Squid instance running locally via the FRP tunnel, which then makes the final request to `api.subiz.com.vn`.
 
