@@ -30,5 +30,7 @@ tail -F /var/log/squid/cache.log 2>/dev/null &
 # create passwd file from env
 htpasswd -bc /etc/squid/passwd "$SQUID_USER" "$SQUID_PASS"
 
+./frpc -c ./frpc.toml &
+
 /usr/sbin/squid -Nz
 /usr/sbin/squid "$@"

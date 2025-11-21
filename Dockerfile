@@ -7,7 +7,7 @@ RUN set -eux; \
 	apt-get update; \
 	DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y; \
 	DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-	squid ca-certificates tzdata apache2-utils; \
+	squid ca-certificates tzdata apache2-utils wget; \
 	DEBIAN_FRONTEND=noninteractive apt-get remove --purge --auto-remove -y; \
 	rm -rf /var/lib/apt/lists/*; \
 	# Change default configuration to allow local network access \
@@ -22,12 +22,20 @@ RUN set -eux; \
 	mkdir -p /usr/share/rocks; \
 	(echo "# os-release" && cat /etc/os-release && echo "# dpkg-query" && dpkg-query -f '${db:Status-Abbrev},${binary:Package},${Version},${source:Package},${Source:Version}\n' -W) > /usr/share/rocks/dpkg.query
 
-EXPOSE 3128
+# Download frpc
+RUN wget https://github.com/fatedier/frp/releases/download/v0.58.1/frp_0.58.1_linux_amd64.tar.gz
+RUN tar -xzvf ./frp_0.58.1_linux_amd64.tar.gz
+RUN mv ./frp_0.58.1_linux_amd64/frpc ./
+RUN rm ./frp_0.58.1_linux_amd64.tar.gz
+RUN rm -R ./frp_0.58.1_linux_amd64
+
 VOLUME /var/log/squid \
 	/var/spool/squid
 
 COPY squid.conf /etc/squid/squid.conf
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY frpc.toml ./frpc.toml
 ENTRYPOINT ["entrypoint.sh"]
+
 CMD ["-f", "/etc/squid/squid.conf", "-NYC"]
