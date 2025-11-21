@@ -1,53 +1,170 @@
-## Squid proxy server
-- ready to to
+# Squid Proxy with FRP Tunneling
 
-### Usage
-#### Docker
-1. Login to your **remote server** (Example IP: `1.2.3.4`)
-```sh
-docker run -d --name squid-container -e SQUID_USER=user1 -e SQUID_PASS=s3cret -e TZ=UTC -p 3128:3128 thanhpk/squid:1.0.0
+This project sets up a Squid proxy that runs behind a NAT or firewall, exposing it to the internet using `frp` (a fast reverse proxy). This allows you to route your traffic through the proxy server without exposing it directly.
+
+## How It Works
+
+The setup involves three main components:
+
+*   **Client**: Your local machine or browser that wants to send traffic through the proxy.
+*   **Broker Server (frps)**: A publicly accessible server that acts as a middleman. It accepts connections from the proxy servers and forwards traffic from clients to them.
+*   **Proxy Server (squid + frpc)**: A Squid proxy server that can be located anywhere (e.g., behind a NAT). It initiates a connection to the Broker Server and waits for traffic to proxy.
+
+### Architecture
+
+```mermaid
+                   ┌────────────┐       ┌─ ─ ─ ─ ─ ─ ─ ─ ┐
+                   │  BROKER    │   ┌ - ► PROXY SERVER N │
+                   │  SERVER    │       │ IP ..........  │
+                   │ IP 5.6.7.8 │   │   └────────────────┘
+                   │            │       ┌────────────────┐     ┌───────────────────┐
+                   │            │   ┌───┼ PROXY SERVER 1 ┼─────► https://ipinfo.io │
+  ┌────────────┐   │            │   │   │ IP 11.11.11.11 │     └───────────────────┘
+  │   CLIENT   │   │            │   │   └────────────────┘
+  │ IP 1.2.3.4 │───►:17001      │   │   ┌────────────────┐
+  └────────────┘   │:17002 :7000◄───┼───┼ PROXY SERVER 2 │
+                   │:17003      │   │   │ IP 12.12.12.12 │
+                   │:.....      │   │   └────────────────┘
+                   │:1700n      │   │   ┌────────────────┐
+                   │            │   └───┼ PROXY SERVER 3 │
+                   │            │       │ IP 13.13.13.13 │
+                   └────────────┘       └────────────────┘
 ```
 
-2. On your **local machine**
-Check your local IP:
+Without the proxy, your IP is exposed:
+```sh
+curl https://ipinfo.io
+# Output: {"ip": "1.2.3.4", ...}
+```
+
+With the proxy, the IP of the proxy server is used:
+```sh
+curl -x http://user:pass@5.6.7.8:17001 https://ipinfo.io
+# Output: {"ip": "11.11.11.11", ...}
+```
+
+---
+
+## Deployment
+
+Follow these steps to deploy the broker and proxy servers.
+
+### 1. Run the Broker Server (frps)
+
+The broker server requires a public IP and several open ports:
+*   **`7000` (TCP)**: For proxy clients (`frpc`) to connect.
+*   **`17000` (HTTP)**: For the `frps` dashboard.
+*   **`17001-17999` (TCP)**: For your clients to connect to the proxies.
+
+**Configuration (`frps.toml`)**
+```toml
+# ./frps.toml
+[common]
+bind_port = 7000
+token = "a_secure_password_123"
+
+# Dashboard configuration
+dashboard_port = 17000
+dashboard_user = "admin"
+dashboard_pwd = "another_secure_password"
+
+# Logging
+log_file = "./frps.log"
+log_level = "info"
+log_max_days = 7
+```
+
+**Run with Docker:**
+```sh
+docker run -d --name frps --network host \
+  -v $(pwd)/frps.toml:/frps.toml \
+  ghcr.io/fatedier/frps:v0.65.0 /usr/bin/frps -c /frps.toml
+```
+
+Once running, you can access the dashboard at `http://<broker-server-ip>:17000`.
+
+### 2. Run the Proxy Server (squid + frpc)
+
+Run this on any machine you want to use as a proxy.
+
+**Run with Docker Compose (`docker-compose.yml`):**
+```yaml
+services:
+  squid-proxy:
+    image: thanhpk/squid:2.0.0
+    container_name: squid-proxy
+    restart: unless-stopped
+    environment:
+      - SQUID_USER=user1
+      - SQUID_PASS=s3cret
+      - FRP_SERVER_ADDR=frp.subiz.net # Replace with your broker IP
+      - FRP_TOKEN=a_secure_password_123 # Must match frps.toml
+      - FRP_REMOTE_PORT=17001
+      - TZ=UTC
+```
+**Run with Docker:**
+```sh
+docker run -d --name squid-proxy \
+  -e SQUID_USER=user1 \
+  -e SQUID_PASS=s3cret \
+  -e FRP_SERVER_ADDR=frp.subiz.net \
+  -e FRP_TOKEN=a_secure_password_123 \
+  -e FRP_REMOTE_PORT=17001 \
+  -e TZ=UTC \
+  --restart unless-stopped \
+  thanhpk/squid:2.0.0
+```
+
+#### Environment Variables
+
+| Variable          | Description                                                    |
+|-------------------|----------------------------------------------------------------|
+| `SQUID_USER`      | The username for authenticating with the Squid proxy.          |
+| `SQUID_PASS`      | The password for authenticating with the Squid proxy.          |
+| `FRP_SERVER_ADDR` | The address of the broker server (`frps`).                     |
+| `FRP_TOKEN`       | The authentication token to connect to the broker.             |
+| `FRP_REMOTE_PORT` | The port on the broker to expose this Squid proxy on.          |
+| `TZ`              | Sets the timezone for the container (e.g., `UTC`).             |
+
+
+---
+
+## How to Use
+
+On your local machine, check your current public IP:
 ```sh
 curl https://ipinfo.io/ip
 ```
 
-Test if the server has hidden the IP
+Now, make a request through the proxy. The URL is constructed using the credentials for the **Squid proxy** and the address of the **broker server**.
 ```sh
-curl -x http://user1:123456@1.2.3.4:3128 https://ipinfo.io/ip
+curl -x http://user1:s3cret@<broker-server-ip>:<frp-remote-port> https://ipinfo.io/ip
+```
+Example:
+```sh
+curl -x http://user1:s3cret@5.6.7.8:17001 https://ipinfo.io/ip
 ```
 
-It should return `1.2.3.4` - the server IP instead of your local IP
+This should return the IP of one of your proxy servers, not your local IP.
 
-#### Docker Compose
+---
 
-```yaml
-services:
-  squid-proxy:
-    image: thanhpk/squid:1.0.0
-    container_name: squid-proxy
-    ports:
-      - "3128:3128"
-    environment:
-      - SQUID_USER=user1
-      - SQUID_PASS=s3cret
-	  - FRP_SERVER_ADDR=frp.subiz.net
-	  - FRP_TOKEN=...
-	  - FRP_REMOTE_PORT=17001
-    restart: unless-stopped
-```
+## Development
 
-This repo is based on: https://git.launchpad.net/~ubuntu-docker-images/ubuntu-docker-images/+git/squid/
+1.  Ask a team member for the development `FRP_TOKEN`.
+2.  Add it to your shell profile (`.zshrc`, `.bashrc`, etc.):
+    ```sh
+    export FRP_TOKEN="..."
+    ```
+3.  Reload your shell or open a new terminal and run the debug script:
+    ```sh
+    ./debug.sh
+    ```
+4.  In another terminal, test the connection:
+    ```sh
+    curl -x http://user1:s3cret@frp.subiz.net:17001 https://api5.subiz.com.vn/4.1/ip
+    ```
+This command routes traffic from your machine to the `frp.subiz.net` broker, which forwards it back to the Squid instance running locally via the FRP tunnel, which then makes the final request to `api.subiz.com.vn`.
 
-#### Development
-1. Ask Thanh for the FRP_TOKEN (`server/dev/frps/frps.toml` this token is used to authorize your client with the `frp.subiz.net` server)
-2. Add the `export FRP_TOKEN="..."` to your `.zshrc` or `.bashrc`
-3. Open an new terminal and run `./debug.sh`
-4. Open another terminal and run `curl -x http://user1:s3cret@frp.subiz.net:17001 https://api5.subiz.com.vn/4.1/ip` to see your IP
-
-What did that curl just do?
-```
- [your machine] <--tcp(https)--> [frp.subiz.net] <--frp--> [your machine] <--https--> [api.subiz.com.vn]
-```
+---
+This repository is based on the official [Ubuntu Squid Docker image](https://git.launchpad.net/~ubuntu-docker-images/ubuntu-docker-images/+git/squid/).
